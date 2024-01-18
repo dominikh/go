@@ -83,12 +83,12 @@ func main() {
 		flag.Usage()
 	}
 
-	if isTraceV2(traceFile) {
-		if err := cmdv2.Main(traceFile, *httpFlag, *pprofFlag, *debugFlag); err != nil {
-			dief("%s\n", err)
-		}
-		return
+	// if isTraceV2(traceFile) {
+	if err := cmdv2.Main(traceFile, *httpFlag, *pprofFlag, *debugFlag); err != nil {
+		dief("%s\n", err)
 	}
+	return
+	// }
 
 	var pprofFunc traceviewer.ProfileFunc
 	switch *pprofFlag {

@@ -16,11 +16,14 @@ import (
 type Version uint32
 
 const (
+	Go111   Version = 11
+	Go121   Version = 21
 	Go122   Version = 22
 	Current         = Go122
 )
 
 var versions = map[Version][]event.Spec{
+	Go111: nil,
 	Go122: go122.Specs(),
 }
 
