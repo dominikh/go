@@ -38,7 +38,7 @@ func NewReader(r io.Reader) (*Reader, error) {
 		return nil, err
 	}
 	switch v {
-	case version.Go111, version.Go121:
+	case version.Go111, version.Go119, version.Go121:
 		tr, err := domtrace.Parse(br, int(v+1000))
 		if err != nil {
 			return nil, err
@@ -71,10 +71,12 @@ func (r *Reader) ReadEvent() (e Event, err error) {
 	if r.go121Events != nil {
 		ev, ok := r.go121Events.next()
 		if !ok {
+			// XXX do we have to emit an EventSync?
 			return Event{}, io.EOF
 		}
 		return ev, nil
 	}
+
 	// Go 1.22+ trace parsing algorithm.
 	//
 	// (1) Read in all the batches for the next generation from the stream.

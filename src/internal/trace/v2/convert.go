@@ -123,7 +123,6 @@ func (it *oldEventsIter) init(pr domtrace.Trace) error {
 	addBuiltin(sSelect, "select")
 	addBuiltin(sEmpty, "")
 	addBuiltin(sMarkAssistWait, "GC mark assist wait for work")
-	// XXX make sure these strings match 1.22
 	addBuiltin(sSTWUnknown, "")
 	addBuiltin(sSTWGCMarkTermination, "GC mark termination")
 	addBuiltin(sSTWGCSweepTermination, "GC sweep termination")
@@ -141,8 +140,6 @@ func (it *oldEventsIter) init(pr domtrace.Trace) error {
 	addBuiltin(sSTWReadMemStatsSlow, "ReadMemStatsSlow (test)")
 	addBuiltin(sSTWPageCachePagesLeaked, "PageCachePagesLeaked (test)")
 	addBuiltin(sSTWResetDebugLog, "ResetDebugLog (test)")
-	// XXX what about "system goroutine wait", "GC background sweeper wait", "wait for debug call", "wait
-	// until GC ends"
 
 	if addErr != nil {
 		// This should be impossible but let's be safe.
@@ -236,7 +233,7 @@ func (it *oldEventsIter) convertEvent(ev *domtrace.Event) (Event, bool) {
 				ctx: schedCtx{
 					G: GoID(syscall.G),
 					P: ProcID(syscall.P),
-					M: NoThread,
+					M: ThreadID(syscall.P),
 				},
 				table: it.evt,
 				base: baseEvent{
@@ -332,7 +329,7 @@ func (it *oldEventsIter) convertEvent(ev *domtrace.Event) (Event, bool) {
 			ctx: schedCtx{
 				G: GoID(ev.G),
 				P: ProcID(ev.P),
-				M: NoThread,
+				M: ThreadID(ev.P),
 			},
 			table: it.evt,
 			base: baseEvent{
@@ -345,7 +342,7 @@ func (it *oldEventsIter) convertEvent(ev *domtrace.Event) (Event, bool) {
 			ctx: schedCtx{
 				G: GoID(ev.G),
 				P: ProcID(ev.P),
-				M: NoThread,
+				M: ThreadID(ev.P),
 			},
 			table: it.evt,
 			base: baseEvent{
@@ -458,7 +455,7 @@ func (it *oldEventsIter) convertEvent(ev *domtrace.Event) (Event, bool) {
 		ctx: schedCtx{
 			G: GoID(ev.G),
 			P: ProcID(ev.P),
-			M: NoThread,
+			M: ThreadID(ev.P),
 		},
 		table: it.evt,
 		base: baseEvent{
