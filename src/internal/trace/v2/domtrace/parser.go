@@ -262,7 +262,7 @@ type proc struct {
 	done bool
 }
 
-const allocatorBucketSize = 524288 // 32 MiB of events
+const BucketSize = 524288 // 32 MiB of events
 
 type BucketSlice struct {
 	n       int
@@ -273,7 +273,7 @@ type BucketSlice struct {
 func (l *BucketSlice) grow() *Event {
 	a, b := l.Index(l.n)
 	if a >= len(l.Buckets) {
-		l.Buckets = append(l.Buckets, make([]Event, allocatorBucketSize))
+		l.Buckets = append(l.Buckets, make([]Event, BucketSize))
 	}
 	ptr := &l.Buckets[a][b]
 	l.n++
@@ -290,7 +290,7 @@ func (l *BucketSlice) append(v Event) *Event {
 func (l *BucketSlice) Index(i int) (int, int) {
 	// Doing the division on uint instead of int compiles this function to a shift and an AND (for power of 2
 	// bucket sizes), versus a whole bunch of instructions for int.
-	return int(uint(i) / allocatorBucketSize), int(uint(i) % allocatorBucketSize)
+	return int(uint(i) / BucketSize), int(uint(i) % BucketSize)
 }
 
 func (l *BucketSlice) Ptr(i int) *Event {
@@ -346,10 +346,10 @@ func (p *Parser) parseRest() (BucketSlice, error) {
 	// XXX find a better name than eventss
 
 	events := BucketSlice{
-		Buckets: make([][]Event, (totalEvents+allocatorBucketSize)/allocatorBucketSize),
+		Buckets: make([][]Event, (totalEvents+BucketSize)/BucketSize),
 	}
 	for i := range events.Buckets {
-		events.Buckets[i] = make([]Event, allocatorBucketSize)
+		events.Buckets[i] = make([]Event, BucketSize)
 	}
 
 	// Merge events as long as at least one P has more events
