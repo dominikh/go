@@ -58,9 +58,10 @@ type Trace struct {
 	//
 	// OPT(dh): we could renumber stacks, PCs and Strings densely and store them in slices instead of maps. I don't know
 	// if the cost of accesses will outweigh the cost of renumbering.
-	Stacks  map[uint32][]uint64
-	PCs     map[uint64]Frame
-	Strings map[uint64]string
+	Stacks        map[uint32][]uint64
+	PCs           map[uint64]Frame
+	Strings       map[uint64]string
+	InlineStrings []string
 
 	SmallestExtraString uint64
 }
@@ -86,7 +87,9 @@ type Parser struct {
 
 	bigArgsBuf []byte
 
-	strings map[uint64]string
+	strings              map[uint64]string
+	inlineStrings        []string
+	inlineStringsMapping map[string]int
 	// OPT(dh): pStates doesn't need to be a map, as processor IDs are gapless and start at 0. We just have to change
 	// how we track fake Ps. Instead of starting them at a specific offset, give them the next free IDs.
 	pStates     map[int32]*pState
@@ -103,10 +106,9 @@ type Parser struct {
 	args []uint64
 
 	// state for parseEvent
-	lastTs       Timestamp
-	lastG        uint64
-	lastP        int32
-	logMessageID uint64
+	lastTs Timestamp
+	lastG  uint64
+	lastP  int32
 }
 
 //gcassert:inline
@@ -184,6 +186,7 @@ func (p *Parser) parse() (Trace, error) {
 	p.pStates = make(map[int32]*pState)
 	p.stacks = make(map[uint32][]uint64)
 	p.pcs = make(map[uint64]Frame)
+	p.inlineStringsMapping = make(map[string]int)
 
 	if err := p.indexAndPartiallyParse(); err != nil {
 		return Trace{}, err
@@ -219,12 +222,12 @@ func (p *Parser) parse() (Trace, error) {
 	}
 
 	res := Trace{
-		Version:             p.ver,
-		Events:              eventss,
-		Stacks:              p.stacks,
-		Strings:             p.strings,
-		PCs:                 p.pcs,
-		SmallestExtraString: p.logMessageID,
+		Version:       p.ver,
+		Events:        eventss,
+		Stacks:        p.stacks,
+		Strings:       p.strings,
+		InlineStrings: p.inlineStrings,
+		PCs:           p.pcs,
 	}
 	return res, nil
 }
@@ -969,12 +972,14 @@ func (p *Parser) parseEvent(raw *rawEvent, ev *Event) error {
 			// e.Args 0: taskID, 1:keyID, 2: stackID, 3: messageID
 			// raw.sargs 0: message
 
-			// EvUserLog contains the message inline, not as a string ID. We turn it into an ID. String IDs are
-			// (currently) sequentially allocated and start from zero, so we count backwards starting from MaxUint64,
-			// hoping runtime IDs and our IDs will never meet.
-			p.logMessageID--
-			p.strings[p.logMessageID] = raw.sargs[0]
-			ev.Args[3] = p.logMessageID
+			if id, ok := p.inlineStringsMapping[raw.sargs[0]]; ok {
+				ev.Args[3] = uint64(id)
+			} else {
+				id := len(p.inlineStrings)
+				p.inlineStringsMapping[raw.sargs[0]] = id
+				p.inlineStrings = append(p.inlineStrings, raw.sargs[0])
+				ev.Args[3] = uint64(id)
+			}
 		}
 
 		return nil
@@ -1438,7 +1443,7 @@ const (
 	EvGCMarkAssistDone  event.Type = 44 // GC mark assist done [timestamp]
 	EvUserTaskCreate    event.Type = 45 // trace.NewTask [timestamp, internal task id, internal parent id, stack, name string]
 	EvUserTaskEnd       event.Type = 46 // end of task [timestamp, internal task id, stack]
-	EvUserRegion        event.Type = 47 // trace.WithRegion [timestamp, internal task id, mode(0:start, 1:end), stack, name string]
+	EvUserRegion        event.Type = 47 // trace.WithRegion [timestamp, internal task id, mode(0:start, 1:end), name string]
 	EvUserLog           event.Type = 48 // trace.Log [timestamp, internal id, key string id, stack, value string]
 	EvCPUSample         event.Type = 49 // CPU profiling sample [timestamp, stack, real timestamp, real P id (-1 when absent), goroutine id]
 	EvCount             event.Type = 50
