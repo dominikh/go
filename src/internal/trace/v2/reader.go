@@ -27,7 +27,7 @@ type Reader struct {
 	order       ordering
 	emittedSync bool
 
-	go121Events []Event
+	go121Events <-chan Event
 }
 
 // NewReader creates a new trace reader.
@@ -37,6 +37,7 @@ func NewReader(r io.Reader) (*Reader, error) {
 	if err != nil {
 		return nil, err
 	}
+	fmt.Println(v)
 	switch v {
 	case version.Go111, version.Go121:
 		tr, err := domtrace.Parse(br, int(v+1000))
@@ -69,12 +70,11 @@ func NewReader(r io.Reader) (*Reader, error) {
 // event and io.EOF.
 func (r *Reader) ReadEvent() (e Event, err error) {
 	if r.go121Events != nil {
-		if len(r.go121Events) == 0 {
+		ev, ok := <-r.go121Events
+		if !ok {
 			return Event{}, io.EOF
 		}
-		e = r.go121Events[0]
-		r.go121Events = r.go121Events[1:]
-		return e, nil
+		return ev, nil
 	}
 	// Go 1.22+ trace parsing algorithm.
 	//

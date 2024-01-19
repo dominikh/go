@@ -5,12 +5,14 @@ import (
 	"internal/trace/v2/event"
 	"internal/trace/v2/event/go122"
 	"math"
+	"os"
+	"runtime/pprof"
 )
 
 // XXX figure out what's meant to go into base.extra
 // apparently extraStrings for user tasks because tasks can span generations
 
-func ConvertOld(pr domtrace.Trace) []Event {
+func ConvertOld(pr domtrace.Trace) <-chan Event {
 	// TODO populate evt.frequency
 
 	evt := evTable{}
@@ -108,212 +110,218 @@ func ConvertOld(pr domtrace.Trace) []Event {
 	pr.Stacks = nil
 	evt.stacks.compactify()
 
-	eventsv2 := make([]Event, 0, pr.Events.Len())
-	preInit := true
-	createdPreInit := make(map[GoID]struct{})
-	for evID := 0; evID < pr.Events.Len(); evID++ {
-		ev := pr.Events.Ptr(evID)
-		var mappedType event.Type
-		mappedArgs := ev.Args
-		switch ev.Type {
-		case domtrace.EvGomaxprocs:
-			mappedType = go122.EvProcsChange
-			if preInit {
-				// The first EvGomaxprocs signals the end of trace initialization. At this point we've seen
-				// all goroutines that already existed at trace begin.
-				preInit = false
-				for gid := range createdPreInit {
-					// These are goroutines that already existed when tracing started but for which we
-					// received neither GoWaiting, GoInSyscall, or GoStart. These are goroutines that are in
-					// the states _Gidle or _Grunnable.
-					eventsv2 = append(eventsv2,
-						Event{
-							ctx: schedCtx{
-								G: GoID(gid),
-								P: NoProc,
-								M: NoThread,
-							},
-							table: &evt,
-							base: baseEvent{
-								typ:  go122.EvGoStatus,
-								time: Time(ev.Ts),
-								args: [4]uint64{uint64(gid), ^uint64(0), uint64(go122.GoRunnable)},
-							},
-						})
+	out := make(chan Event, 1024)
+	go func() {
+		preInit := true
+		createdPreInit := make(map[GoID]struct{})
+		for i, bucket := range pr.Events.Buckets {
+			for j := range bucket {
+				if i*len(bucket)+j >= pr.Events.Len() {
+					break
 				}
-				createdPreInit = nil
-			}
-		case domtrace.EvProcStart:
-			mappedType = go122.EvProcStart
-			mappedArgs = [4]uint64{uint64(ev.P)}
-		case domtrace.EvProcStop:
-			mappedType = go122.EvProcStop
-		case domtrace.EvGCStart:
-			mappedType = go122.EvGCBegin
-		case domtrace.EvGCDone:
-			mappedType = go122.EvGCEnd
-		case domtrace.EvSTWStart:
-			sid := sSTWUnknown - stringID(pr.STWReason(ev.Args[0]))
-			mappedType = go122.EvSTWBegin
-			mappedArgs = [4]uint64{uint64(sid)}
-		case domtrace.EvSTWDone:
-			mappedType = go122.EvSTWEnd
-		case domtrace.EvGCSweepStart:
-			mappedType = go122.EvGCSweepBegin
-		case domtrace.EvGCSweepDone:
-			mappedType = go122.EvGCSweepEnd
-		case domtrace.EvGoCreate:
-			if preInit {
-				createdPreInit[GoID(ev.Args[0])] = struct{}{}
-				continue
-			}
-			mappedType = go122.EvGoCreate
-		case domtrace.EvGoStart:
-			if preInit {
-				mappedType = go122.EvGoStatus
-				mappedArgs = [4]uint64{ev.Args[0], ^uint64(0), uint64(go122.GoRunning)}
-				delete(createdPreInit, GoID(ev.Args[0]))
-			} else {
-				mappedType = go122.EvGoStart
-			}
-		case domtrace.EvGoStartLabel:
-			eventsv2 = append(eventsv2,
-				Event{
+				ev := &bucket[j]
+				var mappedType event.Type
+				mappedArgs := ev.Args
+				switch ev.Type {
+				case domtrace.EvGomaxprocs:
+					mappedType = go122.EvProcsChange
+					if preInit {
+						// The first EvGomaxprocs signals the end of trace initialization. At this point we've seen
+						// all goroutines that already existed at trace begin.
+						preInit = false
+						for gid := range createdPreInit {
+							// These are goroutines that already existed when tracing started but for which we
+							// received neither GoWaiting, GoInSyscall, or GoStart. These are goroutines that are in
+							// the states _Gidle or _Grunnable.
+							out <- Event{
+								ctx: schedCtx{
+									G: GoID(gid),
+									P: NoProc,
+									M: NoThread,
+								},
+								table: &evt,
+								base: baseEvent{
+									typ:  go122.EvGoStatus,
+									time: Time(ev.Ts),
+									args: [4]uint64{uint64(gid), ^uint64(0), uint64(go122.GoRunnable)},
+								},
+							}
+						}
+						createdPreInit = nil
+					}
+				case domtrace.EvProcStart:
+					mappedType = go122.EvProcStart
+					mappedArgs = [4]uint64{uint64(ev.P)}
+				case domtrace.EvProcStop:
+					mappedType = go122.EvProcStop
+				case domtrace.EvGCStart:
+					mappedType = go122.EvGCBegin
+				case domtrace.EvGCDone:
+					mappedType = go122.EvGCEnd
+				case domtrace.EvSTWStart:
+					sid := sSTWUnknown - stringID(pr.STWReason(ev.Args[0]))
+					mappedType = go122.EvSTWBegin
+					mappedArgs = [4]uint64{uint64(sid)}
+				case domtrace.EvSTWDone:
+					mappedType = go122.EvSTWEnd
+				case domtrace.EvGCSweepStart:
+					mappedType = go122.EvGCSweepBegin
+				case domtrace.EvGCSweepDone:
+					mappedType = go122.EvGCSweepEnd
+				case domtrace.EvGoCreate:
+					if preInit {
+						createdPreInit[GoID(ev.Args[0])] = struct{}{}
+						continue
+					}
+					mappedType = go122.EvGoCreate
+				case domtrace.EvGoStart:
+					if preInit {
+						mappedType = go122.EvGoStatus
+						mappedArgs = [4]uint64{ev.Args[0], ^uint64(0), uint64(go122.GoRunning)}
+						delete(createdPreInit, GoID(ev.Args[0]))
+					} else {
+						mappedType = go122.EvGoStart
+					}
+				case domtrace.EvGoStartLabel:
+					out <- Event{
+						ctx: schedCtx{
+							G: GoID(ev.G),
+							P: ProcID(ev.P),
+							M: NoThread,
+						},
+						table: &evt,
+						base: baseEvent{
+							typ:  go122.EvGoStart,
+							time: Time(ev.Ts),
+							args: ev.Args,
+						},
+					}
+					out <- Event{
+						ctx: schedCtx{
+							G: GoID(ev.G),
+							P: ProcID(ev.P),
+							M: NoThread,
+						},
+						table: &evt,
+						base: baseEvent{
+							typ:  go122.EvGoLabel,
+							time: Time(ev.Ts),
+							args: [4]uint64{ev.Args[2]},
+						},
+					}
+					continue
+				case domtrace.EvGoEnd:
+					mappedType = go122.EvGoDestroy
+				case domtrace.EvGoStop:
+					mappedType = go122.EvGoBlock
+					mappedArgs = [4]uint64{uint64(sForever), ev.Args[0]}
+				case domtrace.EvGoSched:
+					mappedType = go122.EvGoStop
+					mappedArgs = [4]uint64{uint64(sGosched), ev.Args[0]}
+				case domtrace.EvGoPreempt:
+					mappedType = go122.EvGoStop
+					mappedArgs = [4]uint64{uint64(sPreempted), ev.Args[0]}
+				case domtrace.EvGoSleep:
+					mappedType = go122.EvGoStop
+					mappedArgs = [4]uint64{uint64(sSleep), ev.Args[0]}
+				case domtrace.EvGoBlock:
+					mappedType = go122.EvGoBlock
+					mappedArgs = [4]uint64{uint64(sEmpty), ev.Args[0]}
+				case domtrace.EvGoUnblock:
+					mappedType = go122.EvGoUnblock
+				case domtrace.EvGoBlockSend:
+					mappedType = go122.EvGoBlock
+					mappedArgs = [4]uint64{uint64(sChanSend), ev.Args[0]}
+				case domtrace.EvGoBlockRecv:
+					mappedType = go122.EvGoBlock
+					mappedArgs = [4]uint64{uint64(sChanRecv), ev.Args[0]}
+				case domtrace.EvGoBlockSelect:
+					mappedType = go122.EvGoBlock
+					mappedArgs = [4]uint64{uint64(sSelect), ev.Args[0]}
+				case domtrace.EvGoBlockSync:
+					mappedType = go122.EvGoBlock
+					mappedArgs = [4]uint64{uint64(sSync), ev.Args[0]}
+				case domtrace.EvGoBlockCond:
+					mappedType = go122.EvGoBlock
+					mappedArgs = [4]uint64{uint64(sSyncCond), ev.Args[0]}
+				case domtrace.EvGoBlockNet:
+					mappedType = go122.EvGoBlock
+					mappedArgs = [4]uint64{uint64(sNetwork), ev.Args[0]}
+				case domtrace.EvGoBlockGC:
+					mappedType = go122.EvGoBlock
+					mappedArgs = [4]uint64{uint64(sMarkAssistWait), ev.Args[0]}
+				case domtrace.EvGoSysCall:
+					// TODO handle this
+
+					// If the next event on the same G is EvGoSysBlock, then this event is the start of a syscall and EvGoSysExit is the end.
+
+					// I have no idea how to represent non-blocking syscalls, as previously these were just
+					// instantaneous events. maybe make them 1 ns long syscall?
+
+				case domtrace.EvGoSysExit:
+					mappedType = go122.EvGoSyscallEndBlocked
+				case domtrace.EvGoSysBlock:
+					//XXX we need the args vom EvGoSysCall
+					mappedType = go122.EvGoSyscallBegin
+				case domtrace.EvGoWaiting:
+					mappedType = go122.EvGoStatus
+					mappedArgs = [4]uint64{ev.Args[0], ^uint64(0), uint64(go122.GoWaiting)}
+					delete(createdPreInit, GoID(ev.Args[0]))
+				case domtrace.EvGoInSyscall:
+					mappedType = go122.EvGoStatus
+					mappedArgs = [4]uint64{ev.Args[0], ^uint64(0), uint64(go122.GoSyscall)}
+					delete(createdPreInit, GoID(ev.Args[0]))
+				case domtrace.EvHeapAlloc:
+					mappedType = go122.EvHeapAlloc
+				case domtrace.EvHeapGoal:
+					mappedType = go122.EvHeapGoal
+				case domtrace.EvGCMarkAssistStart:
+					mappedType = go122.EvGCMarkAssistBegin
+				case domtrace.EvGCMarkAssistDone:
+					mappedType = go122.EvGCMarkAssistEnd
+				case domtrace.EvUserTaskCreate:
+					//XXX think about extraStrings and args
+					mappedType = go122.EvUserTaskBegin
+					mappedArgs = [4]uint64{ev.Args[0], ev.Args[1], ev.Args[3], ev.Args[2]}
+				case domtrace.EvUserTaskEnd:
+					mappedType = go122.EvUserTaskEnd
+				case domtrace.EvUserRegion:
+					// Depending on the mode:
+					// XXX implement
+					mappedType = go122.EvUserRegionBegin
+					mappedType = go122.EvUserRegionEnd
+				case domtrace.EvUserLog:
+					mappedType = go122.EvUserLog
+				case domtrace.EvCPUSample:
+					mappedType = go122.EvCPUSample
+					mappedArgs = [4]uint64{0, ev.Args[2], ev.Args[3], ev.Args[0]}
+				default:
+					panic(ev.Type)
+				}
+
+				be := baseEvent{
+					typ:  mappedType,
+					time: Time(ev.Ts),
+					args: mappedArgs,
+				}
+				evv2 := Event{
 					ctx: schedCtx{
 						G: GoID(ev.G),
 						P: ProcID(ev.P),
 						M: NoThread,
 					},
 					table: &evt,
-					base: baseEvent{
-						typ:  go122.EvGoStart,
-						time: Time(ev.Ts),
-						args: ev.Args,
-					},
-				},
-
-				Event{
-					ctx: schedCtx{
-						G: GoID(ev.G),
-						P: ProcID(ev.P),
-						M: NoThread,
-					},
-					table: &evt,
-					base: baseEvent{
-						typ:  go122.EvGoLabel,
-						time: Time(ev.Ts),
-						args: [4]uint64{ev.Args[2]},
-					},
-				},
-			)
-			continue
-		case domtrace.EvGoEnd:
-			mappedType = go122.EvGoDestroy
-		case domtrace.EvGoStop:
-			mappedType = go122.EvGoBlock
-			mappedArgs = [4]uint64{uint64(sForever), ev.Args[0]}
-		case domtrace.EvGoSched:
-			mappedType = go122.EvGoStop
-			mappedArgs = [4]uint64{uint64(sGosched), ev.Args[0]}
-		case domtrace.EvGoPreempt:
-			mappedType = go122.EvGoStop
-			mappedArgs = [4]uint64{uint64(sPreempted), ev.Args[0]}
-		case domtrace.EvGoSleep:
-			mappedType = go122.EvGoStop
-			mappedArgs = [4]uint64{uint64(sSleep), ev.Args[0]}
-		case domtrace.EvGoBlock:
-			mappedType = go122.EvGoBlock
-			mappedArgs = [4]uint64{uint64(sEmpty), ev.Args[0]}
-		case domtrace.EvGoUnblock:
-			mappedType = go122.EvGoUnblock
-		case domtrace.EvGoBlockSend:
-			mappedType = go122.EvGoBlock
-			mappedArgs = [4]uint64{uint64(sChanSend), ev.Args[0]}
-		case domtrace.EvGoBlockRecv:
-			mappedType = go122.EvGoBlock
-			mappedArgs = [4]uint64{uint64(sChanRecv), ev.Args[0]}
-		case domtrace.EvGoBlockSelect:
-			mappedType = go122.EvGoBlock
-			mappedArgs = [4]uint64{uint64(sSelect), ev.Args[0]}
-		case domtrace.EvGoBlockSync:
-			mappedType = go122.EvGoBlock
-			mappedArgs = [4]uint64{uint64(sSync), ev.Args[0]}
-		case domtrace.EvGoBlockCond:
-			mappedType = go122.EvGoBlock
-			mappedArgs = [4]uint64{uint64(sSyncCond), ev.Args[0]}
-		case domtrace.EvGoBlockNet:
-			mappedType = go122.EvGoBlock
-			mappedArgs = [4]uint64{uint64(sNetwork), ev.Args[0]}
-		case domtrace.EvGoBlockGC:
-			mappedType = go122.EvGoBlock
-			mappedArgs = [4]uint64{uint64(sMarkAssistWait), ev.Args[0]}
-		case domtrace.EvGoSysCall:
-			// TODO handle this
-
-			// If the next event on the same G is EvGoSysBlock, then this event is the start of a syscall and EvGoSysExit is the end.
-
-			// I have no idea how to represent non-blocking syscalls, as previously these were just
-			// instantaneous events. maybe make them 1 ns long syscall?
-
-		case domtrace.EvGoSysExit:
-			mappedType = go122.EvGoSyscallEndBlocked
-		case domtrace.EvGoSysBlock:
-			//XXX we need the args vom EvGoSysCall
-			mappedType = go122.EvGoSyscallBegin
-		case domtrace.EvGoWaiting:
-			mappedType = go122.EvGoStatus
-			mappedArgs = [4]uint64{ev.Args[0], ^uint64(0), uint64(go122.GoWaiting)}
-			delete(createdPreInit, GoID(ev.Args[0]))
-		case domtrace.EvGoInSyscall:
-			mappedType = go122.EvGoStatus
-			mappedArgs = [4]uint64{ev.Args[0], ^uint64(0), uint64(go122.GoSyscall)}
-			delete(createdPreInit, GoID(ev.Args[0]))
-		case domtrace.EvHeapAlloc:
-			mappedType = go122.EvHeapAlloc
-		case domtrace.EvHeapGoal:
-			mappedType = go122.EvHeapGoal
-		case domtrace.EvGCMarkAssistStart:
-			mappedType = go122.EvGCMarkAssistBegin
-		case domtrace.EvGCMarkAssistDone:
-			mappedType = go122.EvGCMarkAssistEnd
-		case domtrace.EvUserTaskCreate:
-			//XXX think about extraStrings and args
-			mappedType = go122.EvUserTaskBegin
-			mappedArgs = [4]uint64{ev.Args[0], ev.Args[1], ev.Args[3], ev.Args[2]}
-		case domtrace.EvUserTaskEnd:
-			mappedType = go122.EvUserTaskEnd
-		case domtrace.EvUserRegion:
-			// Depending on the mode:
-			// XXX implement
-			mappedType = go122.EvUserRegionBegin
-			mappedType = go122.EvUserRegionEnd
-		case domtrace.EvUserLog:
-			mappedType = go122.EvUserLog
-		case domtrace.EvCPUSample:
-			mappedType = go122.EvCPUSample
-			mappedArgs = [4]uint64{0, ev.Args[2], ev.Args[3], ev.Args[0]}
-		default:
-			panic(ev.Type)
+					base:  be,
+				}
+				if mappedType != 0 {
+					out <- evv2
+				}
+			}
+			// Release memory once we're done with a bucket
+			pr.Events.Buckets[i] = nil
 		}
-
-		be := baseEvent{
-			typ:  mappedType,
-			time: Time(ev.Ts),
-			args: mappedArgs,
-		}
-		evv2 := Event{
-			ctx: schedCtx{
-				G: GoID(ev.G),
-				P: ProcID(ev.P),
-				M: NoThread,
-			},
-			table: &evt,
-			base:  be,
-		}
-		if mappedType != 0 {
-			eventsv2 = append(eventsv2, evv2)
-		}
-	}
-
-	return eventsv2
+		close(out)
+		pprof.WriteHeapProfile(os.Stdout)
+	}()
+	return out
 }

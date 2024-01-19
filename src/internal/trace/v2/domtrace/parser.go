@@ -266,46 +266,36 @@ const allocatorBucketSize = 524288 // 32 MiB of events
 
 type BucketSlice struct {
 	n       int
-	buckets [][]Event
+	Buckets [][]Event
 }
 
 // Grow grows the slice by one and returns a pointer to the new element, without overwriting it.
-func (l *BucketSlice) Grow() *Event {
-	a, b := l.index(l.n)
-	if a >= len(l.buckets) {
-		l.buckets = append(l.buckets, make([]Event, allocatorBucketSize))
+func (l *BucketSlice) grow() *Event {
+	a, b := l.Index(l.n)
+	if a >= len(l.Buckets) {
+		l.Buckets = append(l.Buckets, make([]Event, allocatorBucketSize))
 	}
-	ptr := &l.buckets[a][b]
+	ptr := &l.Buckets[a][b]
 	l.n++
 	return ptr
 }
 
 // Append appends v to the slice and returns a pointer to the new element.
-func (l *BucketSlice) Append(v Event) *Event {
-	ptr := l.Grow()
+func (l *BucketSlice) append(v Event) *Event {
+	ptr := l.grow()
 	*ptr = v
 	return ptr
 }
 
-func (l *BucketSlice) index(i int) (int, int) {
+func (l *BucketSlice) Index(i int) (int, int) {
 	// Doing the division on uint instead of int compiles this function to a shift and an AND (for power of 2
 	// bucket sizes), versus a whole bunch of instructions for int.
 	return int(uint(i) / allocatorBucketSize), int(uint(i) % allocatorBucketSize)
 }
 
 func (l *BucketSlice) Ptr(i int) *Event {
-	a, b := l.index(i)
-	return &l.buckets[a][b]
-}
-
-func (l *BucketSlice) Get(i int) Event {
-	a, b := l.index(i)
-	return l.buckets[a][b]
-}
-
-func (l *BucketSlice) Set(i int, v Event) {
-	a, b := l.index(i)
-	l.buckets[a][b] = v
+	a, b := l.Index(i)
+	return &l.Buckets[a][b]
 }
 
 func (l *BucketSlice) Len() int {
@@ -356,10 +346,10 @@ func (p *Parser) parseRest() (BucketSlice, error) {
 	// XXX find a better name than eventss
 
 	events := BucketSlice{
-		buckets: make([][]Event, (totalEvents+allocatorBucketSize)/allocatorBucketSize),
+		Buckets: make([][]Event, (totalEvents+allocatorBucketSize)/allocatorBucketSize),
 	}
-	for i := range events.buckets {
-		events.buckets[i] = make([]Event, allocatorBucketSize)
+	for i := range events.Buckets {
+		events.Buckets[i] = make([]Event, allocatorBucketSize)
 	}
 
 	// Merge events as long as at least one P has more events
@@ -443,7 +433,7 @@ func (p *Parser) parseRest() (BucketSlice, error) {
 		case EvGoSysExitLocal:
 			f.ev.Type = EvGoSysExit
 		}
-		events.Append(f.ev)
+		events.append(f.ev)
 
 		if err := transition(gs, g, init, next); err != nil {
 			return BucketSlice{}, err
