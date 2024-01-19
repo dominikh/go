@@ -84,6 +84,7 @@ func main() {
 	}
 
 	// if isTraceV2(traceFile) {
+	// XXX this is wrong for -d, because that still expects to read actual v2 traces
 	if err := cmdv2.Main(traceFile, *httpFlag, *pprofFlag, *debugFlag); err != nil {
 		dief("%s\n", err)
 	}

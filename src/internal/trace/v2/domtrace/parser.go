@@ -19,29 +19,14 @@ type Event struct {
 	// The Event type is carefully laid out to optimize its size and to avoid pointers, the latter so that the garbage
 	// collector won't have to scan any memory of our millions of events.
 	//
-	// Instead of pointers, fields like StkID and Link are indices into slices.
+	// Instead of pointers, fields like StkID are indices into slices.
 
-	Ts    Timestamp // timestamp in nanoseconds
-	G     uint64    // G on which the event happened
-	Args  [4]uint64 // event-type-specific arguments
-	StkID uint32    // unique stack ID
-	P     int32     // P on which the event happened (can be one of TimerP, NetpollP, SyscallP)
-	// linked event (can be nil), depends on event type:
-	// for GCStart: the GCStop
-	// for GCSTWStart: the GCSTWDone
-	// for GCSweepStart: the GCSweepDone
-	// for GoCreate: first GoStart, GoWaiting, or GoInSyscall of the created goroutine
-	// for GoStart/GoStartLabel: the associated GoEnd, GoBlock or other blocking event
-	// for GoSched/GoPreempt: the next GoStart
-	// for GoBlock and other blocking events: the unblock event
-	// for GoUnblock: the associated GoStart
-	// for GoInSyscall and blocking GoSysCall: the associated GoSysExit
-	// for GoSysExit: the next GoStart
-	// for GCMarkAssistStart: the associated GCMarkAssistDone
-	// for UserTaskCreate: the UserTaskEnd
-	// for UserRegion: if the start region, the corresponding UserRegion end event
-	Link int32
-	Type event.Type // one of Ev*
+	Ts    Timestamp  // timestamp in nanoseconds
+	G     uint64     // G on which the event happened
+	Args  [4]uint64  // event-type-specific arguments
+	StkID uint32     // unique stack ID
+	P     int32      // P on which the event happened (can be one of TimerP, NetpollP, SyscallP)
+	Type  event.Type // one of Ev*
 }
 
 // Frame is a frame in stack traces.
@@ -893,7 +878,7 @@ func (p *Parser) parseEvent(raw *rawEvent, ev *Event) error {
 	case EvCPUSample:
 		// These events get parsed during the indexing step and don't strictly belong to the batch.
 	default:
-		*ev = Event{Type: raw.typ, P: p.lastP, G: p.lastG, Link: -1}
+		*ev = Event{Type: raw.typ, P: p.lastP, G: p.lastG}
 		var argOffset int
 		ev.Ts = p.lastTs + Timestamp(raw.args[0])
 		argOffset = 1
@@ -1024,7 +1009,6 @@ func (p *Parser) postProcessTrace(events []Event) error {
 			if evGC == nil {
 				return fmt.Errorf("bogus GC end (time %d)", ev.Ts)
 			}
-			evGC.Link = int32(evIdx)
 			evGC = nil
 		case EvSTWStart:
 			evp := &evSTW
@@ -1037,7 +1021,6 @@ func (p *Parser) postProcessTrace(events []Event) error {
 			if *evp == nil {
 				return fmt.Errorf("bogus STW end (time %d)", ev.Ts)
 			}
-			(*evp).Link = int32(evIdx)
 			*evp = nil
 		case EvGCSweepStart:
 			p := ps[ev.P]
@@ -1060,7 +1043,6 @@ func (p *Parser) postProcessTrace(events []Event) error {
 			// goroutine starts tracing, so we can't report an error here.
 			g := gs[ev.G]
 			if g.evMarkAssist != nil {
-				g.evMarkAssist.Link = int32(evIdx)
 				g.evMarkAssist = nil
 			}
 
@@ -1070,7 +1052,6 @@ func (p *Parser) postProcessTrace(events []Event) error {
 			if p.evSweep == nil {
 				return fmt.Errorf("bogus sweeping end (time %d)", ev.Ts)
 			}
-			p.evSweep.Link = int32(evIdx)
 			p.evSweep = nil
 
 			ps[ev.P] = p
@@ -1078,9 +1059,6 @@ func (p *Parser) postProcessTrace(events []Event) error {
 			g := gs[ev.G]
 			if g.state != gRunnable {
 				return fmt.Errorf("g %d is not runnable before EvGoWaiting (time %d)", ev.G, ev.Ts)
-			}
-			if g.ev != nil {
-				g.ev.Link = int32(evIdx)
 			}
 			g.state = gWaiting
 			g.ev = ev
@@ -1090,9 +1068,6 @@ func (p *Parser) postProcessTrace(events []Event) error {
 			g := gs[ev.G]
 			if g.state != gRunnable {
 				return fmt.Errorf("g %d is not runnable before EvGoInSyscall (time %d)", ev.G, ev.Ts)
-			}
-			if g.ev != nil {
-				g.ev.Link = int32(evIdx)
 			}
 			g.state = gWaiting
 			g.ev = ev
@@ -1127,7 +1102,6 @@ func (p *Parser) postProcessTrace(events []Event) error {
 			}
 
 			if g.ev != nil {
-				g.ev.Link = int32(evIdx)
 				g.ev = nil
 			}
 
@@ -1139,16 +1113,11 @@ func (p *Parser) postProcessTrace(events []Event) error {
 			if err := checkRunning(p, g, ev, false); err != nil {
 				return err
 			}
-			g.evStart.Link = int32(evIdx)
 			g.evStart = nil
 			g.state = gDead
 			p.g = 0
 
 			if ev.Type == EvGoEnd { // flush all active regions
-				regions := activeRegions[ev.G]
-				for _, s := range regions {
-					s.Link = int32(evIdx)
-				}
 				delete(activeRegions, ev.G)
 			}
 
@@ -1161,7 +1130,6 @@ func (p *Parser) postProcessTrace(events []Event) error {
 				return err
 			}
 			g.state = gRunnable
-			g.evStart.Link = int32(evIdx)
 			g.evStart = nil
 			p.g = 0
 			g.ev = ev
@@ -1184,9 +1152,6 @@ func (p *Parser) postProcessTrace(events []Event) error {
 			if g1.ev != nil && g1.ev.Type == EvGoBlockNet {
 				ev.P = NetpollP
 			}
-			if g1.ev != nil {
-				g1.ev.Link = int32(evIdx)
-			}
 			g1.state = gRunnable
 			g1.ev = ev
 			gs[ev.Args[0]] = g1
@@ -1207,7 +1172,6 @@ func (p *Parser) postProcessTrace(events []Event) error {
 				return err
 			}
 			g.state = gWaiting
-			g.evStart.Link = int32(evIdx)
 			g.evStart = nil
 			p.g = 0
 
@@ -1217,9 +1181,6 @@ func (p *Parser) postProcessTrace(events []Event) error {
 			g := gs[ev.G]
 			if g.state != gWaiting {
 				return fmt.Errorf("g %d is not waiting during syscall exit (time %d)", ev.G, ev.Ts)
-			}
-			if g.ev != nil && (g.ev.Type == EvGoSysCall || g.ev.Type == EvGoInSyscall) {
-				g.ev.Link = int32(evIdx)
 			}
 			g.state = gRunnable
 			g.ev = ev
@@ -1234,7 +1195,6 @@ func (p *Parser) postProcessTrace(events []Event) error {
 			}
 			g.state = gWaiting
 			g.ev = ev
-			g.evStart.Link = int32(evIdx)
 			g.evStart = nil
 			p.g = 0
 
@@ -1249,10 +1209,7 @@ func (p *Parser) postProcessTrace(events []Event) error {
 
 		case EvUserTaskEnd:
 			taskid := ev.Args[0]
-			if taskCreateEv, ok := tasks[taskid]; ok {
-				taskCreateEv.Link = int32(evIdx)
-				delete(tasks, taskid)
-			}
+			delete(tasks, taskid)
 
 		case EvUserRegion:
 			mode := ev.Args[1]
@@ -1266,8 +1223,6 @@ func (p *Parser) postProcessTrace(events []Event) error {
 					if s.Args[0] != ev.Args[0] || s.Args[2] != ev.Args[2] { // task id, region name mismatch
 						return fmt.Errorf("misuse of region in goroutine %d: span end %q when the inner-most active span start event is %q", ev.G, ev, s)
 					}
-					// Link region start event with span end event
-					s.Link = int32(evIdx)
 
 					if n > 1 {
 						activeRegions[ev.G] = regions[:n-1]
@@ -1290,8 +1245,6 @@ func (p *Parser) postProcessTrace(events []Event) error {
 	}
 
 	// TODO(dvyukov): restore stacks for EvGoStart events.
-	// TODO(dvyukov): test that all EvGoStart events has non-nil Link.
-
 	return nil
 }
 
@@ -1567,43 +1520,3 @@ const (
 
 	NumSTWReasons = 17
 )
-
-func (stw STWReason) String() string {
-	// These strings are taken from Go's trace parser.
-	switch stw {
-	case STWGCMarkTermination:
-		return "GC mark termination"
-	case STWGCSweepTermination:
-		return "GC sweep termination"
-	case STWWriteHeapDump:
-		return "write heap dump"
-	case STWGoroutineProfile:
-		return "goroutine profile"
-	case STWGoroutineProfileCleanup:
-		return "goroutine profile cleanup"
-	case STWAllGoroutinesStackTrace:
-		return "all goroutine stack trace"
-	case STWReadMemStats:
-		return "read mem stats"
-	case STWAllThreadsSyscall:
-		return "AllThreadsSyscall"
-	case STWGOMAXPROCS:
-		return "GOMAXPROCS"
-	case STWStartTrace:
-		return "start trace"
-	case STWStopTrace:
-		return "stop trace"
-	case STWCountPagesInUse:
-		return "CountPagesInUse (test)"
-	case STWReadMetricsSlow:
-		return "ReadMetricsSlow (test)"
-	case STWReadMemStatsSlow:
-		return "ReadMemStatsSlow (test)"
-	case STWPageCachePagesLeaked:
-		return "PageCachePagesLeaked (test)"
-	case STWResetDebugLog:
-		return "ResetDebugLog (test)"
-	default:
-		return "unknown"
-	}
-}
