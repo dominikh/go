@@ -67,7 +67,7 @@ func (it *oldEventsIter) init(pr domtrace.Trace) error {
 	it.trace = pr
 	it.preInit = true
 	it.createdPreInit = make(map[GoID]struct{})
-	it.evt = &evTable{}
+	it.evt = &evTable{pcs: make(map[uint64]frame)}
 	it.events = pr.Events
 	it.syscalls = make(map[GoID]*domtrace.Event)
 
@@ -100,6 +100,7 @@ func (it *oldEventsIter) init(pr domtrace.Trace) error {
 		evt.strings.insert(stringID(nid), s)
 	}
 	max += uint64(len(pr.InlineStrings))
+	pr.InlineStrings = nil
 
 	// Add strings that the converter emits explicitly.
 	if max+uint64(sLast) < max {
@@ -151,21 +152,23 @@ func (it *oldEventsIter) init(pr domtrace.Trace) error {
 	// Convert stacks.
 	for id, stk := range pr.Stacks {
 		stkv2 := stack{
-			frames: make([]frame, len(stk)),
-		}
-		for i, pc := range stk {
-			framev1 := pr.PCs[pc]
-			framev2 := frame{
-				pc:     pc,
-				funcID: stringID(framev1.Fn),
-				fileID: stringID(framev1.File),
-				line:   uint64(framev1.Line),
-			}
-			stkv2.frames[i] = framev2
+			pcs: stk,
 		}
 		evt.stacks.insert(stackID(id), stkv2)
 	}
+
+	// OPT(dh): if we could share the frame type between this package and
+	// domtrace we wouldn't have to copy the map.
+	for pc, f := range pr.PCs {
+		evt.pcs[pc] = frame{
+			pc:     pc,
+			funcID: stringID(f.Fn),
+			fileID: stringID(f.File),
+			line:   uint64(f.Line),
+		}
+	}
 	pr.Stacks = nil
+	pr.PCs = nil
 	evt.stacks.compactify()
 	return nil
 }
