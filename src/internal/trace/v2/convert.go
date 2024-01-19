@@ -129,7 +129,11 @@ func (it *oldEventsIter) next() (Event, bool) {
 	if len(it.extra) > 0 {
 		ev := it.extra[0]
 		it.extra = it.extra[1:]
+
 		if len(it.extra) == 0 {
+			// After trace initialization, we will have one extra item per existing goroutine. After that,
+			// we'll only ever have one extra item. Don't keep around too much memory, but don't allocate
+			// every time we have to store one extra item.
 			if cap(it.extra) > 1 {
 				it.extra = nil
 			} else {
@@ -145,7 +149,6 @@ func (it *oldEventsIter) next() (Event, bool) {
 	ev, ok := it.convertEvent(&it.events.Buckets[it.bucket][it.intraBucket])
 
 	it.intraBucket++
-	// XXX simplify this
 	if it.intraBucket == domtrace.BucketSize || (it.bucket*domtrace.BucketSize+it.intraBucket) >= it.events.Len() {
 		// Release memory
 		it.events.Buckets[it.bucket] = nil
