@@ -4,7 +4,6 @@ import (
 	"internal/trace/v2/domtrace"
 	"internal/trace/v2/event"
 	"internal/trace/v2/event/go122"
-	"math"
 )
 
 // XXX figure out what's meant to go into base.extra
@@ -19,11 +18,13 @@ type oldEventsIter struct {
 	intraBucket    int
 	events         domtrace.BucketSlice
 	extra          []Event
+
+	extraStrings [sLast]stringID
 }
 
 const (
 	// Block reasons
-	sForever stringID = math.MaxUint64 - iota
+	sForever = iota
 	sPreempted
 	sGosched
 	sSleep
@@ -54,7 +55,13 @@ const (
 	sSTWReadMemStatsSlow
 	sSTWPageCachePagesLeaked
 	sSTWResetDebugLog
+
+	sLast
 )
+
+func (it *oldEventsIter) builtinString(id uint64) stringID {
+	return stringID(it.trace.SmallestExtraString - 1 - id)
+}
 
 func (it *oldEventsIter) init(pr domtrace.Trace) {
 	it.trace = pr
@@ -70,37 +77,41 @@ func (it *oldEventsIter) init(pr domtrace.Trace) {
 	}
 	pr.Strings = nil
 	it.evt.strings.compactify()
-	evt.strings.insert(sForever, "forever")
-	evt.strings.insert(sPreempted, "preempted")
-	evt.strings.insert(sGosched, "runtime.Gosched")
-	evt.strings.insert(sSleep, "sleep")
-	evt.strings.insert(sChanSend, "chan send")
-	evt.strings.insert(sChanRecv, "chan receive")
-	evt.strings.insert(sNetwork, "network")
-	evt.strings.insert(sSync, "sync")
-	evt.strings.insert(sSyncCond, "sync.(*Cond).Wait")
-	evt.strings.insert(sSelect, "select")
-	evt.strings.insert(sEmpty, "")
-	evt.strings.insert(sMarkAssistWait, "GC mark assist wait for work")
+	evt.strings.insert(it.builtinString(sForever), "forever")
+	evt.strings.insert(it.builtinString(sPreempted), "preempted")
+	evt.strings.insert(it.builtinString(sGosched), "runtime.Gosched")
+	evt.strings.insert(it.builtinString(sSleep), "sleep")
+	evt.strings.insert(it.builtinString(sChanSend), "chan send")
+	evt.strings.insert(it.builtinString(sChanRecv), "chan receive")
+	evt.strings.insert(it.builtinString(sNetwork), "network")
+	evt.strings.insert(it.builtinString(sSync), "sync")
+	evt.strings.insert(it.builtinString(sSyncCond), "sync.(*Cond).Wait")
+	evt.strings.insert(it.builtinString(sSelect), "select")
+	evt.strings.insert(it.builtinString(sEmpty), "")
+	evt.strings.insert(it.builtinString(sMarkAssistWait), "GC mark assist wait for work")
 
 	// XXX make sure these strings match 1.22
-	evt.strings.insert(sSTWUnknown, "")
-	evt.strings.insert(sSTWGCMarkTermination, "GC mark termination")
-	evt.strings.insert(sSTWGCSweepTermination, "GC sweep termination")
-	evt.strings.insert(sSTWWriteHeapDump, "write heap dump")
-	evt.strings.insert(sSTWGoroutineProfile, "goroutine profile")
-	evt.strings.insert(sSTWGoroutineProfileCleanup, "goroutine profile cleanup")
-	evt.strings.insert(sSTWAllGoroutinesStackTrace, "all goroutine stack trace")
-	evt.strings.insert(sSTWReadMemStats, "read mem stats")
-	evt.strings.insert(sSTWAllThreadsSyscall, "AllThreadsSyscall")
-	evt.strings.insert(sSTWGOMAXPROCS, "GOMAXPROCS")
-	evt.strings.insert(sSTWStartTrace, "start trace")
-	evt.strings.insert(sSTWStopTrace, "stop trace")
-	evt.strings.insert(sSTWCountPagesInUse, "CountPagesInUse (test)")
-	evt.strings.insert(sSTWReadMetricsSlow, "ReadMetricsSlow (test)")
-	evt.strings.insert(sSTWReadMemStatsSlow, "ReadMemStatsSlow (test)")
-	evt.strings.insert(sSTWPageCachePagesLeaked, "PageCachePagesLeaked (test)")
-	evt.strings.insert(sSTWResetDebugLog, "ResetDebugLog (test)")
+	evt.strings.insert(it.builtinString(sSTWUnknown), "")
+	evt.strings.insert(it.builtinString(sSTWGCMarkTermination), "GC mark termination")
+	evt.strings.insert(it.builtinString(sSTWGCSweepTermination), "GC sweep termination")
+	evt.strings.insert(it.builtinString(sSTWWriteHeapDump), "write heap dump")
+	evt.strings.insert(it.builtinString(sSTWGoroutineProfile), "goroutine profile")
+	evt.strings.insert(it.builtinString(sSTWGoroutineProfileCleanup), "goroutine profile cleanup")
+	evt.strings.insert(it.builtinString(sSTWAllGoroutinesStackTrace), "all goroutine stack trace")
+	evt.strings.insert(it.builtinString(sSTWReadMemStats), "read mem stats")
+	evt.strings.insert(it.builtinString(sSTWAllThreadsSyscall), "AllThreadsSyscall")
+	evt.strings.insert(it.builtinString(sSTWGOMAXPROCS), "GOMAXPROCS")
+	evt.strings.insert(it.builtinString(sSTWStartTrace), "start trace")
+	evt.strings.insert(it.builtinString(sSTWStopTrace), "stop trace")
+	evt.strings.insert(it.builtinString(sSTWCountPagesInUse), "CountPagesInUse (test)")
+	evt.strings.insert(it.builtinString(sSTWReadMetricsSlow), "ReadMetricsSlow (test)")
+	evt.strings.insert(it.builtinString(sSTWReadMemStatsSlow), "ReadMemStatsSlow (test)")
+	evt.strings.insert(it.builtinString(sSTWPageCachePagesLeaked), "PageCachePagesLeaked (test)")
+	evt.strings.insert(it.builtinString(sSTWResetDebugLog), "ResetDebugLog (test)")
+
+	if s, ok := evt.strings.get(it.builtinString(sForever)); !ok || s != "forever" {
+		panic(s)
+	}
 
 	// XXX what about "system goroutine wait", "GC background sweeper wait", "wait for debug call", "wait
 	// until GC ends"
@@ -125,6 +136,7 @@ func (it *oldEventsIter) init(pr domtrace.Trace) {
 	evt.stacks.compactify()
 }
 
+// next returns the next event, or false if there are no more events.
 func (it *oldEventsIter) next() (Event, bool) {
 	if len(it.extra) > 0 {
 		ev := it.extra[0]
@@ -163,6 +175,11 @@ func (it *oldEventsIter) next() (Event, bool) {
 	return ev, true
 }
 
+// convertEvent converts an event from the old trace format to zero or more
+// events in the new format. Most events translate 1 to 1. Some events don't
+// result in an event right away, in which case convertEvent returns false. Some
+// events result in more than one new event; in this case, convertEvent returns
+// the first event and stores additional events in it.extra.
 func (it *oldEventsIter) convertEvent(ev *domtrace.Event) (Event, bool) {
 	var mappedType event.Type
 	mappedArgs := ev.Args
@@ -204,7 +221,7 @@ func (it *oldEventsIter) convertEvent(ev *domtrace.Event) (Event, bool) {
 	case domtrace.EvGCDone:
 		mappedType = go122.EvGCEnd
 	case domtrace.EvSTWStart:
-		sid := sSTWUnknown - stringID(it.trace.STWReason(ev.Args[0]))
+		sid := it.builtinString(uint64(sSTWUnknown - it.trace.STWReason(ev.Args[0])))
 		mappedType = go122.EvSTWBegin
 		mappedArgs = [4]uint64{uint64(sid)}
 	case domtrace.EvSTWDone:
@@ -258,42 +275,42 @@ func (it *oldEventsIter) convertEvent(ev *domtrace.Event) (Event, bool) {
 		mappedType = go122.EvGoDestroy
 	case domtrace.EvGoStop:
 		mappedType = go122.EvGoBlock
-		mappedArgs = [4]uint64{uint64(sForever), ev.Args[0]}
+		mappedArgs = [4]uint64{uint64(it.builtinString(sForever)), ev.Args[0]}
 	case domtrace.EvGoSched:
 		mappedType = go122.EvGoStop
-		mappedArgs = [4]uint64{uint64(sGosched), ev.Args[0]}
+		mappedArgs = [4]uint64{uint64(it.builtinString(sGosched)), ev.Args[0]}
 	case domtrace.EvGoPreempt:
 		mappedType = go122.EvGoStop
-		mappedArgs = [4]uint64{uint64(sPreempted), ev.Args[0]}
+		mappedArgs = [4]uint64{uint64(it.builtinString(sPreempted)), ev.Args[0]}
 	case domtrace.EvGoSleep:
 		mappedType = go122.EvGoStop
-		mappedArgs = [4]uint64{uint64(sSleep), ev.Args[0]}
+		mappedArgs = [4]uint64{uint64(it.builtinString(sSleep)), ev.Args[0]}
 	case domtrace.EvGoBlock:
 		mappedType = go122.EvGoBlock
-		mappedArgs = [4]uint64{uint64(sEmpty), ev.Args[0]}
+		mappedArgs = [4]uint64{uint64(it.builtinString(sEmpty)), ev.Args[0]}
 	case domtrace.EvGoUnblock:
 		mappedType = go122.EvGoUnblock
 	case domtrace.EvGoBlockSend:
 		mappedType = go122.EvGoBlock
-		mappedArgs = [4]uint64{uint64(sChanSend), ev.Args[0]}
+		mappedArgs = [4]uint64{uint64(it.builtinString(sChanSend)), ev.Args[0]}
 	case domtrace.EvGoBlockRecv:
 		mappedType = go122.EvGoBlock
-		mappedArgs = [4]uint64{uint64(sChanRecv), ev.Args[0]}
+		mappedArgs = [4]uint64{uint64(it.builtinString(sChanRecv)), ev.Args[0]}
 	case domtrace.EvGoBlockSelect:
 		mappedType = go122.EvGoBlock
-		mappedArgs = [4]uint64{uint64(sSelect), ev.Args[0]}
+		mappedArgs = [4]uint64{uint64(it.builtinString(sSelect)), ev.Args[0]}
 	case domtrace.EvGoBlockSync:
 		mappedType = go122.EvGoBlock
-		mappedArgs = [4]uint64{uint64(sSync), ev.Args[0]}
+		mappedArgs = [4]uint64{uint64(it.builtinString(sSync)), ev.Args[0]}
 	case domtrace.EvGoBlockCond:
 		mappedType = go122.EvGoBlock
-		mappedArgs = [4]uint64{uint64(sSyncCond), ev.Args[0]}
+		mappedArgs = [4]uint64{uint64(it.builtinString(sSyncCond)), ev.Args[0]}
 	case domtrace.EvGoBlockNet:
 		mappedType = go122.EvGoBlock
-		mappedArgs = [4]uint64{uint64(sNetwork), ev.Args[0]}
+		mappedArgs = [4]uint64{uint64(it.builtinString(sNetwork)), ev.Args[0]}
 	case domtrace.EvGoBlockGC:
 		mappedType = go122.EvGoBlock
-		mappedArgs = [4]uint64{uint64(sMarkAssistWait), ev.Args[0]}
+		mappedArgs = [4]uint64{uint64(it.builtinString(sMarkAssistWait)), ev.Args[0]}
 	case domtrace.EvGoSysCall:
 		// TODO handle this
 
@@ -301,7 +318,7 @@ func (it *oldEventsIter) convertEvent(ev *domtrace.Event) (Event, bool) {
 
 		// I have no idea how to represent non-blocking syscalls, as previously these were just
 		// instantaneous events. maybe make them 1 ns long syscall?
-
+		return Event{}, false
 	case domtrace.EvGoSysExit:
 		mappedType = go122.EvGoSyscallEndBlocked
 	case domtrace.EvGoSysBlock:
@@ -330,12 +347,16 @@ func (it *oldEventsIter) convertEvent(ev *domtrace.Event) (Event, bool) {
 	case domtrace.EvUserTaskEnd:
 		mappedType = go122.EvUserTaskEnd
 	case domtrace.EvUserRegion:
-		// Depending on the mode:
-		// XXX implement
-		mappedType = go122.EvUserRegionBegin
-		mappedType = go122.EvUserRegionEnd
+		switch ev.Args[1] {
+		case 0: // start
+			mappedType = go122.EvUserRegionBegin
+		case 1: // end
+			mappedType = go122.EvUserRegionEnd
+		}
+		mappedArgs = [4]uint64{ev.Args[0], ev.Args[3], ev.Args[2]}
 	case domtrace.EvUserLog:
 		mappedType = go122.EvUserLog
+		mappedArgs = [4]uint64{ev.Args[0], ev.Args[1], ev.Args[3], ev.Args[2]}
 	case domtrace.EvCPUSample:
 		mappedType = go122.EvCPUSample
 		mappedArgs = [4]uint64{0, ev.Args[2], ev.Args[3], ev.Args[0]}
@@ -343,26 +364,19 @@ func (it *oldEventsIter) convertEvent(ev *domtrace.Event) (Event, bool) {
 		panic(ev.Type)
 	}
 
-	// XXX this shouldn't happen once we're done
-	if mappedType == 0 {
-		return Event{}, false
-	}
-
-	be := baseEvent{
-		typ:  mappedType,
-		time: Time(ev.Ts),
-		args: mappedArgs,
-	}
-	evv2 := Event{
+	return Event{
 		ctx: schedCtx{
 			G: GoID(ev.G),
 			P: ProcID(ev.P),
 			M: NoThread,
 		},
 		table: it.evt,
-		base:  be,
-	}
-	return evv2, true
+		base: baseEvent{
+			typ:  mappedType,
+			time: Time(ev.Ts),
+			args: mappedArgs,
+		},
+	}, true
 }
 
 func ConvertOld(pr domtrace.Trace) *oldEventsIter {

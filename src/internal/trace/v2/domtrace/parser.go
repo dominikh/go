@@ -61,6 +61,8 @@ type Trace struct {
 	Stacks  map[uint32][]uint64
 	PCs     map[uint64]Frame
 	Strings map[uint64]string
+
+	SmallestExtraString uint64
 }
 
 type batch struct {
@@ -217,11 +219,12 @@ func (p *Parser) parse() (Trace, error) {
 	}
 
 	res := Trace{
-		Version: p.ver,
-		Events:  eventss,
-		Stacks:  p.stacks,
-		Strings: p.strings,
-		PCs:     p.pcs,
+		Version:             p.ver,
+		Events:              eventss,
+		Stacks:              p.stacks,
+		Strings:             p.strings,
+		PCs:                 p.pcs,
+		SmallestExtraString: p.logMessageID,
 	}
 	return res, nil
 }

@@ -66,7 +66,7 @@ const (
 	EvUserTaskEnd     // end of a task [timestamp, internal task ID, stack ID]
 	EvUserRegionBegin // trace.{Start,With}Region [timestamp, internal task ID, name string ID, stack ID]
 	EvUserRegionEnd   // trace.{End,With}Region [timestamp, internal task ID, name string ID, stack ID]
-	EvUserLog         // trace.Log [timestamp, internal task ID, key string ID, stack, value string ID]
+	EvUserLog         // trace.Log [timestamp, internal task ID, key string ID, value string ID, stack]
 )
 
 // EventString returns the name of a Go 1.22 event.
