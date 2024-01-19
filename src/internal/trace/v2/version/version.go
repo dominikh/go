@@ -25,6 +25,7 @@ const (
 
 var versions = map[Version][]event.Spec{
 	Go111: nil,
+	Go119: nil,
 	Go121: nil,
 	Go122: go122.Specs(),
 }

@@ -333,30 +333,13 @@ func (p *Parser) parseRest() (BucketSlice, error) {
 	// inside the signal handler.
 	sort.Sort((*eventList)(&p.cpuSamples))
 
-	var totalEvents uint64
 	allProcs := make([]proc, 0, len(p.pStates))
-	for m, pState := range p.pStates {
+	for m := range p.pStates {
 		allProcs = append(allProcs, proc{pid: m})
-
-		for _, b := range pState.batches {
-			totalEvents += uint64(b.numEvents)
-		}
 	}
 	allProcs = append(allProcs, proc{pid: ProfileP, events: p.cpuSamples})
-	totalEvents += uint64(len(p.cpuSamples))
 
-	if totalEvents > math.MaxInt32 {
-		return BucketSlice{}, ErrTooManyEvents
-	}
-
-	// XXX find a better name than eventss
-
-	events := BucketSlice{
-		Buckets: make([][]Event, (totalEvents+BucketSize)/BucketSize),
-	}
-	for i := range events.Buckets {
-		events.Buckets[i] = make([]Event, BucketSize)
-	}
+	events := BucketSlice{}
 
 	// Merge events as long as at least one P has more events
 	gs := make(map[uint64]gState)

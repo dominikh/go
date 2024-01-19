@@ -177,10 +177,11 @@ func (it *oldEventsIter) next() (Event, bool) {
 		it.extra = it.extra[1:]
 
 		if len(it.extra) == 0 {
-			// After trace initialization, we will have one extra item per existing goroutine. After that,
-			// we'll only ever have one extra item. Don't keep around too much memory, but don't allocate
-			// every time we have to store one extra item.
-			if cap(it.extra) > 1 {
+			// After trace initialization, we will have one extra item per
+			// existing goroutine. After that, we'll only ever have at most two
+			// extra items. Don't keep around too much memory, but don't
+			// allocate every time we have to store an extra item.
+			if cap(it.extra) > 2 {
 				it.extra = nil
 			} else {
 				it.extra = it.extra[:0]
