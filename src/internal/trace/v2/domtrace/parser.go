@@ -53,7 +53,7 @@ type Trace struct {
 	Version int
 
 	// Events is the sorted list of Events in the trace.
-	Events []Event
+	Events BucketSlice
 	// Stacks is the stack traces keyed by stack IDs from the trace.
 	//
 	// OPT(dh): we could renumber stacks, PCs and Strings densely and store them in slices instead of maps. I don't know
@@ -187,7 +187,8 @@ func (p *Parser) parse() (Trace, error) {
 		return Trace{}, err
 	}
 
-	events, err := p.parseRest()
+	// XXX better name
+	eventss, err := p.parseRest()
 	if err != nil {
 		return Trace{}, err
 	}
@@ -196,13 +197,13 @@ func (p *Parser) parse() (Trace, error) {
 		return Trace{}, errors.New("no EvFrequency event")
 	}
 
-	if len(events) > 0 {
+	if eventss.Len() > 0 {
 		// Translate cpu ticks to real time.
-		minTs := events[0].Ts
+		minTs := eventss.Ptr(0).Ts
 		// Use floating point to avoid integer overflows.
 		freq := 1e9 / float64(p.ticksPerSec)
-		for i := range events {
-			ev := &events[i]
+		for i := 0; i < eventss.Len(); i++ {
+			ev := eventss.Ptr(i)
 			ev.Ts = Timestamp(float64(ev.Ts-minTs) * freq)
 			// Move syscalls to separate fake Ps.
 			if ev.Type == EvGoSysExit {
@@ -211,13 +212,13 @@ func (p *Parser) parse() (Trace, error) {
 		}
 	}
 
-	if err := p.postProcessTrace(events); err != nil {
+	if err := p.postProcessTrace(eventss); err != nil {
 		return Trace{}, err
 	}
 
 	res := Trace{
 		Version: p.ver,
-		Events:  events,
+		Events:  eventss,
 		Stacks:  p.stacks,
 		Strings: p.strings,
 		PCs:     p.pcs,
@@ -261,6 +262,64 @@ type proc struct {
 	done bool
 }
 
+const allocatorBucketSize = 524288 // 32 MiB of events
+
+type BucketSlice struct {
+	n       int
+	buckets [][]Event
+}
+
+// Grow grows the slice by one and returns a pointer to the new element, without overwriting it.
+func (l *BucketSlice) Grow() *Event {
+	a, b := l.index(l.n)
+	if a >= len(l.buckets) {
+		l.buckets = append(l.buckets, make([]Event, allocatorBucketSize))
+	}
+	ptr := &l.buckets[a][b]
+	l.n++
+	return ptr
+}
+
+// Append appends v to the slice and returns a pointer to the new element.
+func (l *BucketSlice) Append(v Event) *Event {
+	ptr := l.Grow()
+	*ptr = v
+	return ptr
+}
+
+func (l *BucketSlice) index(i int) (int, int) {
+	// Doing the division on uint instead of int compiles this function to a shift and an AND (for power of 2
+	// bucket sizes), versus a whole bunch of instructions for int.
+	return int(uint(i) / allocatorBucketSize), int(uint(i) % allocatorBucketSize)
+}
+
+func (l *BucketSlice) Ptr(i int) *Event {
+	a, b := l.index(i)
+	return &l.buckets[a][b]
+}
+
+func (l *BucketSlice) Get(i int) Event {
+	a, b := l.index(i)
+	return l.buckets[a][b]
+}
+
+func (l *BucketSlice) Set(i int, v Event) {
+	a, b := l.index(i)
+	l.buckets[a][b] = v
+}
+
+func (l *BucketSlice) Len() int {
+	return l.n
+}
+
+func (l *BucketSlice) Less(i, j int) bool {
+	return l.Ptr(i).Ts < l.Ptr(j).Ts
+}
+
+func (l *BucketSlice) Swap(i, j int) {
+	*l.Ptr(i), *l.Ptr(j) = *l.Ptr(j), *l.Ptr(i)
+}
+
 // parseRest reads per-P event batches and merges them into a single, consistent stream.
 // The high level idea is as follows. Events within an individual batch are in
 // correct order, because they are emitted by a single P. So we need to produce
@@ -270,7 +329,7 @@ type proc struct {
 // event with the lowest timestamp from the subset, merge it and repeat.
 // This approach ensures that we form a consistent stream even if timestamps are
 // incorrect (condition observed on some machines).
-func (p *Parser) parseRest() ([]Event, error) {
+func (p *Parser) parseRest() (BucketSlice, error) {
 	// The ordering of CPU profile sample events in the data stream is based on
 	// when each run of the signal handler was able to acquire the spinlock,
 	// with original timestamps corresponding to when ReadTrace pulled the data
@@ -291,10 +350,17 @@ func (p *Parser) parseRest() ([]Event, error) {
 	totalEvents += uint64(len(p.cpuSamples))
 
 	if totalEvents > math.MaxInt32 {
-		return nil, ErrTooManyEvents
+		return BucketSlice{}, ErrTooManyEvents
 	}
 
-	events := make([]Event, 0, totalEvents)
+	// XXX find a better name than eventss
+
+	events := BucketSlice{
+		buckets: make([][]Event, (totalEvents+allocatorBucketSize)/allocatorBucketSize),
+	}
+	for i := range events.buckets {
+		events.buckets[i] = make([]Event, allocatorBucketSize)
+	}
 
 	// Merge events as long as at least one P has more events
 	gs := make(map[uint64]gState)
@@ -326,7 +392,7 @@ func (p *Parser) parseRest() ([]Event, error) {
 					i--
 					continue pidLoop
 				} else if err != nil {
-					return nil, err
+					return BucketSlice{}, err
 				} else {
 					proc.events = evs
 				}
@@ -356,7 +422,7 @@ func (p *Parser) parseRest() ([]Event, error) {
 		if len(frontier) == 0 {
 			for i := range allProcs {
 				if !allProcs[i].done {
-					return nil, fmt.Errorf("no consistent ordering of events possible")
+					return BucketSlice{}, fmt.Errorf("no consistent ordering of events possible")
 				}
 			}
 			break
@@ -377,10 +443,10 @@ func (p *Parser) parseRest() ([]Event, error) {
 		case EvGoSysExitLocal:
 			f.ev.Type = EvGoSysExit
 		}
-		events = append(events, f.ev)
+		events.Append(f.ev)
 
 		if err := transition(gs, g, init, next); err != nil {
-			return nil, err
+			return BucketSlice{}, err
 		}
 		availableProcs = append(availableProcs, f.proc)
 	}
@@ -388,8 +454,8 @@ func (p *Parser) parseRest() ([]Event, error) {
 	// At this point we have a consistent stream of events.
 	// Make sure time stamps respect the ordering.
 	// The tests will skip (not fail) the test case if they see this error.
-	if !sort.IsSorted((*eventList)(&events)) {
-		return nil, ErrTimeOrder
+	if !sort.IsSorted(&events) {
+		return BucketSlice{}, ErrTimeOrder
 	}
 
 	// The last part is giving correct timestamps to EvGoSysExit events.
@@ -402,7 +468,8 @@ func (p *Parser) parseRest() ([]Event, error) {
 	// if timestamps are broken we will misplace the event and later report
 	// logically broken trace (instead of reporting broken timestamps).
 	lastSysBlock := make(map[uint64]Timestamp)
-	for _, ev := range events {
+	for i := 0; i < events.Len(); i++ {
+		ev := events.Ptr(i)
 		switch ev.Type {
 		case EvGoSysBlock, EvGoInSyscall:
 			lastSysBlock[ev.G] = ev.Ts
@@ -413,15 +480,15 @@ func (p *Parser) parseRest() ([]Event, error) {
 			}
 			block := lastSysBlock[ev.G]
 			if block == 0 {
-				return nil, fmt.Errorf("stray syscall exit")
+				return BucketSlice{}, fmt.Errorf("stray syscall exit")
 			}
 			if ts < block {
-				return nil, ErrTimeOrder
+				return BucketSlice{}, ErrTimeOrder
 			}
 			ev.Ts = ts
 		}
 	}
-	sort.Stable((*eventList)(&events))
+	sort.Stable(&events)
 
 	return events, nil
 }
@@ -932,7 +999,7 @@ var ErrTimeOrder = errors.New("time stamps out of order")
 // The resulting trace is guaranteed to be consistent
 // (for example, a P does not run two Gs at the same time, or a G is indeed
 // blocked before an unblock event).
-func (p *Parser) postProcessTrace(events []Event) error {
+func (p *Parser) postProcessTrace(events BucketSlice) error {
 	const (
 		gDead = iota
 		gRunnable
@@ -973,8 +1040,8 @@ func (p *Parser) postProcessTrace(events []Event) error {
 		return nil
 	}
 
-	for evIdx := range events {
-		ev := &events[evIdx]
+	for evIdx := 0; evIdx < events.Len(); evIdx++ {
+		ev := events.Ptr(evIdx)
 
 		// Note: each branch is responsible for retrieving P and G descriptions and writing back modifications to the
 		// maps. Deduplicating this step and pulling it outside the switch is too expensive.

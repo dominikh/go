@@ -108,10 +108,11 @@ func ConvertOld(pr domtrace.Trace) []Event {
 	pr.Stacks = nil
 	evt.stacks.compactify()
 
-	eventsv2 := make([]Event, 0, len(pr.Events))
+	eventsv2 := make([]Event, 0, pr.Events.Len())
 	preInit := true
 	createdPreInit := make(map[GoID]struct{})
-	for _, ev := range pr.Events {
+	for evID := 0; evID < pr.Events.Len(); evID++ {
+		ev := pr.Events.Ptr(evID)
 		var mappedType event.Type
 		mappedArgs := ev.Args
 		switch ev.Type {
