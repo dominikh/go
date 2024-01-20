@@ -27,7 +27,7 @@ type Reader struct {
 	order       ordering
 	emittedSync bool
 
-	go121Events *oldEventsIter
+	go121Events *convertIter
 }
 
 // NewReader creates a new trace reader.
@@ -44,7 +44,7 @@ func NewReader(r io.Reader) (*Reader, error) {
 			return nil, err
 		}
 		return &Reader{
-			go121Events: ConvertOld(tr),
+			go121Events: convertOldFormat(tr),
 		}, nil
 	case version.Go122:
 		return &Reader{

@@ -1,3 +1,26 @@
+// This file implements conversion from old (Go 1.11–Go 1.21) traces to the Go
+// 1.22 format.
+//
+// Most events have direct equivalents in 1.22, at worst requiring arguments to
+// be reordered. Some events, such as GoWaiting need to wait for follow-up
+// events to determine the correct translation. GoSyscall, which is an
+// instantaneous event, gets turned into a 1 ns long pair of
+// GoSyscallStart+GoSyscallEnd, unless we observe a GoSysBlock, in which case we
+// emit a GoSyscallStart+GoSyscallEndBlocked pair with the correct duration
+// (i.e. starting at the original GoSyscall).
+//
+// The resulting trace treats the old trace as a single, large generation,
+// sharing a single evTable for all events.
+//
+// We use a new (compared to what was used for 'go tool trace' in earlier
+// versions of Go) parser for old traces that is optimized for speed, low memory
+// usage, and minimal GC pressure. It allocates events in batches so that even
+// though we have to load the entire trace into memory, the conversion process
+// shouldn't result in a doubling of memory usage, even if all converted events
+// are kept alive, as we free batches once we're done with them.
+//
+// The conversion process is lossless.
+
 package trace
 
 import (
@@ -8,10 +31,7 @@ import (
 	"internal/trace/v2/event/go122"
 )
 
-// XXX figure out what's meant to go into base.extra
-// apparently extraStrings for user tasks because tasks can span generations
-
-type oldEventsIter struct {
+type convertIter struct {
 	trace          domtrace.Trace
 	evt            *evTable
 	preInit        bool
@@ -20,7 +40,9 @@ type oldEventsIter struct {
 	intraBucket    int
 	events         domtrace.BucketSlice
 	extra          []Event
+	extraArr       [3]Event
 	syscalls       map[GoID]*domtrace.Event
+	tasks          map[TaskID]taskState
 
 	inlineToStringID  []uint64
 	builtinToStringID []uint64
@@ -63,13 +85,14 @@ const (
 	sLast
 )
 
-func (it *oldEventsIter) init(pr domtrace.Trace) error {
+func (it *convertIter) init(pr domtrace.Trace) error {
 	it.trace = pr
 	it.preInit = true
 	it.createdPreInit = make(map[GoID]struct{})
 	it.evt = &evTable{pcs: make(map[uint64]frame)}
 	it.events = pr.Events
 	it.syscalls = make(map[GoID]*domtrace.Event)
+	it.extra = it.extraArr[:0]
 
 	evt := it.evt
 
@@ -97,7 +120,7 @@ func (it *oldEventsIter) init(pr domtrace.Trace) error {
 	for id, s := range pr.InlineStrings {
 		nid := max + 1 + uint64(id)
 		it.inlineToStringID = append(it.inlineToStringID, nid)
-		evt.strings.insert(stringID(nid), s)
+		add(stringID(nid), s)
 	}
 	max += uint64(len(pr.InlineStrings))
 	pr.InlineStrings = nil
@@ -151,10 +174,7 @@ func (it *oldEventsIter) init(pr domtrace.Trace) error {
 
 	// Convert stacks.
 	for id, stk := range pr.Stacks {
-		stkv2 := stack{
-			pcs: stk,
-		}
-		evt.stacks.insert(stackID(id), stkv2)
+		evt.stacks.insert(stackID(id), stack{pcs: stk})
 	}
 
 	// OPT(dh): if we could share the frame type between this package and
@@ -174,21 +194,13 @@ func (it *oldEventsIter) init(pr domtrace.Trace) error {
 }
 
 // next returns the next event, or false if there are no more events.
-func (it *oldEventsIter) next() (Event, bool) {
+func (it *convertIter) next() (Event, bool) {
 	if len(it.extra) > 0 {
 		ev := it.extra[0]
 		it.extra = it.extra[1:]
 
 		if len(it.extra) == 0 {
-			// After trace initialization, we will have one extra item per
-			// existing goroutine. After that, we'll only ever have at most two
-			// extra items. Don't keep around too much memory, but don't
-			// allocate every time we have to store an extra item.
-			if cap(it.extra) > 2 {
-				it.extra = nil
-			} else {
-				it.extra = it.extra[:0]
-			}
+			it.extra = it.extraArr[:0]
 		}
 		return ev, true
 	}
@@ -219,7 +231,7 @@ func (it *oldEventsIter) next() (Event, bool) {
 // result in an event right away, in which case convertEvent returns false. Some
 // events result in more than one new event; in this case, convertEvent returns
 // the first event and stores additional events in it.extra.
-func (it *oldEventsIter) convertEvent(ev *domtrace.Event) (Event, bool) {
+func (it *convertIter) convertEvent(ev *domtrace.Event) (Event, bool) {
 	var mappedType event.Type
 	mappedArgs := ev.Args
 
@@ -401,10 +413,7 @@ func (it *oldEventsIter) convertEvent(ev *domtrace.Event) (Event, bool) {
 	case domtrace.EvGoSysExit:
 		mappedType = go122.EvGoSyscallEndBlocked
 	case domtrace.EvGoSysBlock:
-		syscall, ok := it.syscalls[GoID(ev.G)]
-		if !ok {
-			// XXX report failure
-		}
+		syscall := it.syscalls[GoID(ev.G)]
 		delete(it.syscalls, GoID(ev.G))
 		mappedType = go122.EvGoSyscallBegin
 		ev = syscall
@@ -426,11 +435,26 @@ func (it *oldEventsIter) convertEvent(ev *domtrace.Event) (Event, bool) {
 	case domtrace.EvGCMarkAssistDone:
 		mappedType = go122.EvGCMarkAssistEnd
 	case domtrace.EvUserTaskCreate:
-		//XXX think about extraStrings and args
 		mappedType = go122.EvUserTaskBegin
 		mappedArgs = [4]uint64{ev.Args[0], ev.Args[1], ev.Args[3], uint64(ev.StkID)}
+		name, _ := it.evt.strings.get(stringID(ev.Args[3]))
+		it.tasks[TaskID(ev.Args[0])] = taskState{name: name, parentID: TaskID(ev.Args[1])}
 	case domtrace.EvUserTaskEnd:
 		mappedType = go122.EvUserTaskEnd
+		// Event.Task expects the parent and name to be smuggled in extra args
+		// and as extra strings.
+		ts, ok := it.tasks[TaskID(ev.Args[0])]
+		if ok {
+			delete(it.tasks, TaskID(ev.Args[0]))
+			mappedArgs = [4]uint64{
+				ev.Args[0],
+				ev.Args[1],
+				uint64(ts.parentID),
+				uint64(it.evt.addExtraString(ts.name)),
+			}
+		} else {
+			mappedArgs = [4]uint64{ev.Args[0], ev.Args[1], uint64(NoTask), uint64(it.evt.addExtraString(""))}
+		}
 	case domtrace.EvUserRegion:
 		switch ev.Args[1] {
 		case 0: // start
@@ -459,6 +483,8 @@ func (it *oldEventsIter) convertEvent(ev *domtrace.Event) (Event, bool) {
 		ctx: schedCtx{
 			G: GoID(ev.G),
 			P: ProcID(ev.P),
+			// the validator expects valid Ms. Pretending that every P has its
+			// own M should be safe.
 			M: ThreadID(ev.P),
 		},
 		table: it.evt,
@@ -470,8 +496,10 @@ func (it *oldEventsIter) convertEvent(ev *domtrace.Event) (Event, bool) {
 	}, true
 }
 
-func ConvertOld(pr domtrace.Trace) *oldEventsIter {
-	it := &oldEventsIter{}
+// convertOldFormat takes a fully loaded trace in the old trace format and
+// returns an iterator over events in the new format.
+func convertOldFormat(pr domtrace.Trace) *convertIter {
+	it := &convertIter{}
 	it.init(pr)
 	return it
 }
