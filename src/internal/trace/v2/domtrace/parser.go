@@ -46,8 +46,6 @@ const (
 	ProfileP // depicts recording of CPU profile samples
 )
 
-const headerLength = 16
-
 // Trace is the result of Parse.
 type Trace struct {
 	Version int
@@ -237,27 +235,6 @@ type rawEvent struct {
 	typ   event.Type
 	args  []uint64
 	sargs []string
-}
-
-func (p *Parser) readHeader() (ver int, err error) {
-	// Read and validate trace header.
-	if len(p.data) < headerLength {
-		return 0, errors.New("trace too short")
-	}
-	ver, err = parseHeader(p.data[:headerLength])
-	if err != nil {
-		return 0, err
-	}
-	p.off += headerLength
-	switch ver {
-	case 1011, 1019, 1021:
-		// Note: When adding a new version, add canned traces
-		// from the old version to the test suite using mkcanned.bash.
-	default:
-		return 0, fmt.Errorf("unsupported trace file version %d.%d", ver/1000, ver%1000)
-	}
-
-	return ver, err
 }
 
 type proc struct {
@@ -832,30 +809,6 @@ func (p *Parser) readStr() (s string, err error) {
 		return "", fmt.Errorf("failed to read trace: %w", io.ErrUnexpectedEOF)
 	}
 	return string(buf), nil
-}
-
-// parseHeader parses trace header of the form "go 1.7 trace\x00\x00\x00\x00"
-// and returns parsed version as 1007.
-func parseHeader(buf []byte) (int, error) {
-	if len(buf) != headerLength {
-		return 0, errors.New("bad header length")
-	}
-	if buf[0] != 'g' || buf[1] != 'o' || buf[2] != ' ' ||
-		buf[3] < '1' || buf[3] > '9' ||
-		buf[4] != '.' ||
-		buf[5] < '1' || buf[5] > '9' {
-		return 0, errors.New("not a trace file")
-	}
-	ver := int(buf[5] - '0')
-	i := 0
-	for ; buf[6+i] >= '0' && buf[6+i] <= '9' && i < 2; i++ {
-		ver = ver*10 + int(buf[6+i]-'0')
-	}
-	ver += int(buf[3]-'0') * 1000
-	if !bytes.Equal(buf[6+i:], []byte(" trace\x00\x00\x00\x00")[:10-i]) {
-		return 0, errors.New("not a trace file")
-	}
-	return ver, nil
 }
 
 // parseEvent transforms raw events into events.
